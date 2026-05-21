@@ -1,0 +1,72 @@
+{
+  "server": {
+    "host": "rfmc.aternos.me",
+    "port": 61751,
+    "version": "auto",
+    "auth": "offline"
+  },
+  "bot": {
+    "baseUsername": "AFKBot",
+    "bot1Username": "AFKBot_1",
+    "bot2Username": "AFKBot_2"
+  },
+  "dualBot": {
+    "enabled": true,
+    "shiftInterval": 300000,
+    "backupDelay": 3000
+  },
+  "features": {
+    "autoDetectVersion": {
+      "enabled": true,
+      "timeout": 10000
+    },
+    "autoReconnect": {
+      "enabled": true,
+      "delay": 5000,
+      "kickDelay": 10000,
+      "maxRetries": 10,
+      "backoffMultiplier": 1.5,
+      "maxDelay": 60000
+    },
+    "randomUsernameOnKick": {
+      "enabled": true,
+      "length": 4
+    },
+    "antiAfk": {
+      "enabled": true,
+      "minInterval": 5000,
+      "maxInterval": 15000,
+      "actions": {
+        "jump": true,
+        "sneak": true,
+        "lookAround": true,
+        "swingArm": true,
+        "walkRandomly": true,
+        "sprintForward": false,
+        "toggleWalk": true,
+        "mineBlockRandomly": false,
+        "placeBlockRandomly": false,
+        "useItem": false,
+        "switchHotbar": true,
+        "dropItem": false,
+        "interactWithEntity": true,
+        "openContainer": false,
+        "inventoryInteraction": true,
+        "randomSequence": true
+      }
+    },
+    "autoChat": {
+      "enabled": true,
+      "interval": 60000,
+      "messages": [
+        "Hello!",
+        "This is an AFK bot.",
+        "I'm currently AFK."
+      ]
+    },
+    "webDashboard": {
+      "enabled": true,
+      "port": 3000
+    }
+  }
+}

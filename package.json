@@ -1,0 +1,32 @@
+{
+  "name": "minecraft-afk-bot",
+  "version": "1.0.0",
+  "description": "A Minecraft AFK bot with web dashboard and auto-reconnect features.",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "npm install --silent && node index.js"
+  },
+  "keywords": [
+    "mineflayer",
+    "minecraft",
+    "afk",
+    "bot",
+    "replit"
+  ],
+  "author": "YourName",
+  "license": "MIT",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "mineflayer": "^4.20.0",
+    "mineflayer-pathfinder": "^2.4.4",
+    "winston": "^3.13.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "devDependencies": {
+    "archiver": "^8.0.0"
+  }
+}
