@@ -570,743 +570,285 @@ function createMinecraftBot() {
     });
 }
 
-
 // =================================================================================================
-// Server khởi động và TỰ ĐỘNG KHỞI ĐỘNG BOT
+// DualBotManager - Quản lý 2 bot Minecraft
 // =================================================================================================
-// createMinecraftBot(); // Dòng này bị comment để bot không tự khởi động khi ứng dụng chạy
-
-// =================================================================================================
-// Web Dashboard (Express)
-// =================================================================================================
-const app = express();
-// Cổng cho Web Dashboard: ưu tiên process.env.PORT (Replit), sau đó đến config, cuối cùng là 3000
-const REPLIT_PORT = process.env.PORT || config.features.webDashboard.port || 3000;
-
-app.use(express.json()); // Cho phép Express đọc JSON trong body request
-app.use(cors()); // Kích hoạt CORS cho tất cả các route
-
-// =================================================================================================
-// CÁC ENDPOINT API - PHẢI ĐƯỢC ĐỊNH NGHĨA TRƯỚC KHI PHỤC VỤ FILE TĨNH
-// =================================================================================================
-
-// Endpoint để lấy logs gần đây cho dashboard
-app.get('/logs', (req, res) => {
-    res.json(recentLogs);
-});
-
-// Endpoint để lấy trạng thái hiện tại của bot
-app.get('/status', (req, res) => {
-    let status = {
-        online: false,
-        username: bot?.username || 'N/A',
-        health: 0,
-        food: 0,
-        position: { x: 0, y: 0, z: 0 },
-        players: 0,
-        uptime: 0,
-        lastKick: botState.lastKick || null,
-        currentVersionAttempt: config.server.version,
-        statusMessage: 'Chưa khởi động' // Trạng thái mặc định
-    };
-
-    if (bot && bot.isOnline) {
-        status.online = true;
-        status.health = bot.health;
-        status.food = bot.food;
-        if (bot.entity) {
-            status.position = {
-                x: parseFloat(bot.entity.position.x.toFixed(2)),
-                y: parseFloat(bot.entity.position.y.toFixed(2)),
-                z: parseFloat(bot.entity.position.z.toFixed(2))
-            };
-        }
-        status.players = Object.keys(bot.players).length;
-        status.uptime = botStartTime ? performance.now() - botStartTime : 0;
-        status.statusMessage = 'Đang trực tuyến';
-    } else if (bot && !bot.isOnline && isAttemptingReconnect) {
-        status.online = false; // Vẫn là offline nhưng đang cố gắng kết nối
-        status.username = currentUsername;
-        status.statusMessage = 'Đang cố gắng kết nối...';
-    } else {
-        status.online = false;
-        status.statusMessage = 'Chưa khởi động';
-    }
-    res.json(status);
-});
-
-// Endpoint để gửi tin nhắn chat vào game
-app.post('/chat', (req, res) => {
-    const { message } = req.body;
-    if (!message || message.trim() === '') {
-        logger.warn('⚠️ DASHBOARD: Yêu cầu gửi chat trống.');
-        return res.status(400).json({ success: false, message: 'Tin nhắn không được để trống.' });
-    }
-    if (bot && bot.isOnline) {
-        bot.chat(message);
-        logger.info(`✉️ DASHBOARD: Gửi tin nhắn từ bảng điều khiển: "${message}"`);
-        res.json({ success: true, message: 'Tin nhắn đã gửi thành công.' });
-    } else {
-        logger.warn(`🚫 DASHBOARD: Không thể gửi tin nhắn "${message}" - Bot không trực tuyến.`);
-        res.status(400).json({ success: false, message: 'Bot không trực tuyến để gửi tin nhắn.' });
-    }
-});
-
-// Endpoint để gửi các lệnh điều khiển bot (start, reconnect, stop)
-app.post('/command', (req, res) => {
-    const { action } = req.body;
-    let responseMessage = 'Lệnh không hợp lệ hoặc bot không trực tuyến.';
-    let success = false;
-
-    if (action === 'reconnect') {
-        if (bot && !isAttemptingReconnect) {
-            logger.info(`🔄 DASHBOARD: Lệnh: Reconnect Bot.`);
-            isManuallyStopped = false; // Đảm bảo cờ này được reset khi người dùng yêu cầu reconnect
-            // Gọi bot.end() sẽ kích hoạt sự kiện 'end' và logic reconnect
-            bot.end('Reconnecting by command'); 
-            responseMessage = 'Đang cố gắng kết nối lại bot...';
-            success = true;
-        } else if (isAttemptingReconnect) {
-            responseMessage = 'Bot đang trong quá trình kết nối lại.';
-            success = false;
-        } else {
-            responseMessage = 'Bot chưa được khởi tạo hoặc đã dừng hoàn toàn.';
-            success = false;
-        }
-    } else if (action === 'stop') {
-        if (bot) {
-            logger.info(`🛑 DASHBOARD: Lệnh: Stop Bot.`);
-            isManuallyStopped = true; // Đặt cờ khi dừng thủ công
-            // Hủy bỏ mọi reconnect đang chờ xử lý khi dừng thủ công
-            if (reconnectTimeoutId) {
-                clearTimeout(reconnectTimeoutId);
-                reconnectTimeoutId = null;
+class DualBotManager {
+    constructor() {
+        this.isStopped = false;
+        this.detectedVersion = null;
+        this.activeBot = 'bot1';
+        this.bots = {
+            bot1: {
+                bot: null,
+                username: config.bot.bot1Username || `${config.bot.baseUsername}_1`,
+                online: false,
+                health: 0,
+                food: 0,
+                position: { x: 0, y: 0, z: 0 },
+                startTime: null,
+                status: 'Stopped',
+                retryCount: 0,
+                isConnecting: false,
+                lastKick: null,
+                afkIntervalId: null,
+                autoChatIntervalId: null,
+                reconnectTimeoutId: null,
+            },
+            bot2: {
+                bot: null,
+                username: config.bot.bot2Username || `${config.bot.baseUsername}_2`,
+                online: false,
+                health: 0,
+                food: 0,
+                position: { x: 0, y: 0, z: 0 },
+                startTime: null,
+                status: 'Stopped',
+                retryCount: 0,
+                isConnecting: false,
+                lastKick: null,
+                afkIntervalId: null,
+                autoChatIntervalId: null,
+                reconnectTimeoutId: null,
             }
-            bot.quit('Stopped by command'); // Sử dụng quit để dừng bot hoàn toàn
-            reconnectAttemptCount = 0;
-            if (afkIntervalId) clearInterval(afkIntervalId); // Xóa interval AFK khi dừng
-            if (autoChatIntervalId) clearInterval(autoChatIntervalId); // Xóa interval AutoChat khi dừng
-            responseMessage = 'Bot đã dừng.';
-            success = true;
-        } else {
-            responseMessage = 'Bot đã dừng hoặc chưa được khởi tạo.';
-            success = false;
-        }
-    } else if (action === 'start') {
-        if (!bot) { // Chỉ khởi động nếu bot chưa được khởi tạo
-            logger.info(`🚀 DASHBOARD: Lệnh: Start Bot.`);
-            reconnectAttemptCount = 0; // Reset số lần thử kết nối khi khởi động mới
-            isManuallyStopped = false; // Reset cờ khi khởi động
-            createMinecraftBot();
-            responseMessage = 'Đang khởi động bot...';
-            success = true;
-        } else if (bot && bot.isOnline) {
-            responseMessage = 'Bot đã trực tuyến.';
-            success = false;
-        } else if (isAttemptingReconnect) {
-            responseMessage = 'Bot đang trong quá trình kết nối.';
-            success = false;
-        } else {
-            responseMessage = 'Bot đang ở trạng thái không xác định, vui lòng thử lại.';
-            success = false;
-        }
-    } else {
-        logger.warn(`🚫 DASHBOARD: Lệnh không xác định nhận được: "${action}"`);
-        responseMessage = `Lệnh "${action}" không hợp lệ.`;
-        success = false;
-    }
-    res.json({ success, message: responseMessage });
-});
-
-// Phục vụ các file tĩnh từ thư mục 'public'. Đảm bảo dòng này nằm SAU các route API.
-const DASHBOARD_HTML = `<!DOCTYPE html>
-<html lang="vi">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Minecraft Dual Bot Dashboard</title>
-    <link rel="icon" href="https://img.icons8.com/plasticine/100/minecraft-cube.png" type="image/png">
-    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <style>
-        :root {
-            --bg: #0d1117;
-            --surface: #161b22;
-            --surface2: #21262d;
-            --border: #30363d;
-            --text: #e6edf3;
-            --text-muted: #8b949e;
-            --green: #3fb950;
-            --red: #f85149;
-            --yellow: #d29922;
-            --blue: #58a6ff;
-            --purple: #bc8cff;
-            --orange: #ffa657;
-            --active-glow: 0 0 20px rgba(63,185,80,0.3);
-            --backup-glow: 0 0 20px rgba(88,166,255,0.2);
-        }
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        body {
-            font-family: 'Inter', sans-serif;
-            background: var(--bg);
-            color: var(--text);
-            min-height: 100vh;
-            padding: 20px;
-        }
-        .header {
-            text-align: center;
-            padding: 24px 0 32px;
-        }
-        .header h1 {
-            font-size: 2rem;
-            font-weight: 700;
-            background: linear-gradient(135deg, var(--green), var(--blue));
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            margin-bottom: 6px;
-        }
-        .header p { color: var(--text-muted); font-size: 0.9rem; }
-
-        .server-bar {
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: 10px;
-            padding: 14px 20px;
-            display: flex;
-            align-items: center;
-            gap: 16px;
-            margin-bottom: 20px;
-            flex-wrap: wrap;
-        }
-        .server-bar .label { color: var(--text-muted); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; }
-        .server-bar .value { font-family: 'JetBrains Mono', monospace; font-size: 0.9rem; color: var(--blue); }
-        .server-bar .sep { color: var(--border); }
-        .version-badge {
-            background: var(--surface2);
-            border: 1px solid var(--border);
-            border-radius: 20px;
-            padding: 3px 12px;
-            font-size: 0.78rem;
-            font-family: 'JetBrains Mono', monospace;
-            color: var(--orange);
-        }
-        .detect-dot {
-            width: 8px; height: 8px; border-radius: 50%;
-            background: var(--yellow);
-            animation: pulse 2s infinite;
-            flex-shrink: 0;
-        }
-        .detect-dot.ok { background: var(--green); animation: none; }
-
-        .bots-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 16px;
-            margin-bottom: 20px;
-        }
-        @media (max-width: 700px) { .bots-grid { grid-template-columns: 1fr; } }
-
-        .bot-card {
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            padding: 20px;
-            position: relative;
-            transition: box-shadow 0.3s;
-        }
-        .bot-card.active { border-color: var(--green); box-shadow: var(--active-glow); }
-        .bot-card.backup { border-color: var(--blue); box-shadow: var(--backup-glow); }
-        .bot-card.offline { border-color: var(--border); opacity: 0.75; }
-
-        .bot-header {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            margin-bottom: 16px;
-        }
-        .bot-icon {
-            width: 36px; height: 36px;
-            border-radius: 8px;
-            display: flex; align-items: center; justify-content: center;
-            font-size: 1.2rem;
-        }
-        .bot-icon.active-icon { background: rgba(63,185,80,0.15); }
-        .bot-icon.backup-icon { background: rgba(88,166,255,0.15); }
-        .bot-icon.offline-icon { background: rgba(248,81,73,0.1); }
-
-        .bot-name { font-weight: 600; font-size: 1rem; }
-        .bot-role-badge {
-            margin-left: auto;
-            padding: 3px 10px;
-            border-radius: 20px;
-            font-size: 0.72rem;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-        }
-        .badge-active { background: rgba(63,185,80,0.15); color: var(--green); border: 1px solid rgba(63,185,80,0.3); }
-        .badge-backup { background: rgba(88,166,255,0.12); color: var(--blue); border: 1px solid rgba(88,166,255,0.3); }
-        .badge-offline { background: rgba(248,81,73,0.1); color: var(--red); border: 1px solid rgba(248,81,73,0.2); }
-        .badge-connecting { background: rgba(210,153,34,0.12); color: var(--yellow); border: 1px solid rgba(210,153,34,0.3); }
-
-        .bot-stats {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 10px;
-            margin-bottom: 14px;
-        }
-        .stat { background: var(--surface2); border-radius: 8px; padding: 10px 12px; }
-        .stat-label { font-size: 0.72rem; color: var(--text-muted); margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.04em; }
-        .stat-value { font-family: 'JetBrains Mono', monospace; font-size: 0.92rem; font-weight: 600; color: var(--text); }
-        .stat-value.green { color: var(--green); }
-        .stat-value.red { color: var(--red); }
-        .stat-value.yellow { color: var(--yellow); }
-        .stat-value.blue { color: var(--blue); }
-
-        .bot-status-bar {
-            background: var(--surface2);
-            border-radius: 6px;
-            padding: 8px 12px;
-            font-size: 0.8rem;
-            color: var(--text-muted);
-            font-family: 'JetBrains Mono', monospace;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-        .status-dot {
-            width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
-        }
-        .dot-green { background: var(--green); box-shadow: 0 0 6px var(--green); animation: pulse 2s infinite; }
-        .dot-blue { background: var(--blue); box-shadow: 0 0 6px var(--blue); animation: pulse 2s infinite; }
-        .dot-red { background: var(--red); }
-        .dot-yellow { background: var(--yellow); animation: pulse 1s infinite; }
-
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.4; }
-        }
-
-        .panel {
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            padding: 20px;
-            margin-bottom: 16px;
-        }
-        .panel-title {
-            font-size: 0.8rem;
-            font-weight: 600;
-            color: var(--text-muted);
-            text-transform: uppercase;
-            letter-spacing: 0.08em;
-            margin-bottom: 14px;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-        .panel-title::after {
-            content: '';
-            flex: 1;
-            height: 1px;
-            background: var(--border);
-        }
-
-        .controls { display: flex; gap: 10px; flex-wrap: wrap; }
-        .btn {
-            padding: 9px 20px;
-            border-radius: 8px;
-            border: 1px solid transparent;
-            font-size: 0.88rem;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.2s;
-            font-family: 'Inter', sans-serif;
-        }
-        .btn:disabled { opacity: 0.4; cursor: not-allowed; }
-        .btn-green { background: rgba(63,185,80,0.15); border-color: rgba(63,185,80,0.4); color: var(--green); }
-        .btn-green:hover:not(:disabled) { background: rgba(63,185,80,0.25); }
-        .btn-blue { background: rgba(88,166,255,0.12); border-color: rgba(88,166,255,0.3); color: var(--blue); }
-        .btn-blue:hover:not(:disabled) { background: rgba(88,166,255,0.22); }
-        .btn-red { background: rgba(248,81,73,0.1); border-color: rgba(248,81,73,0.3); color: var(--red); }
-        .btn-red:hover:not(:disabled) { background: rgba(248,81,73,0.2); }
-        .btn-orange { background: rgba(255,166,87,0.1); border-color: rgba(255,166,87,0.3); color: var(--orange); }
-        .btn-orange:hover:not(:disabled) { background: rgba(255,166,87,0.2); }
-
-        .chat-row { display: flex; gap: 10px; }
-        .chat-input {
-            flex: 1;
-            background: var(--surface2);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            color: var(--text);
-            padding: 9px 14px;
-            font-size: 0.88rem;
-            font-family: 'Inter', sans-serif;
-            outline: none;
-        }
-        .chat-input:focus { border-color: var(--blue); }
-        .chat-input:disabled { opacity: 0.4; }
-
-        .logs-box {
-            background: var(--surface2);
-            border-radius: 8px;
-            padding: 14px;
-            height: 280px;
-            overflow-y: auto;
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 0.78rem;
-            line-height: 1.6;
-        }
-        .log-entry { padding: 2px 0; border-bottom: 1px solid rgba(255,255,255,0.04); }
-        .log-entry:last-child { border-bottom: none; }
-        .log-entry.info { color: var(--green); }
-        .log-entry.warn { color: var(--yellow); }
-        .log-entry.error { color: var(--red); }
-
-        .toast {
-            position: fixed; bottom: 24px; right: 24px;
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: 10px;
-            padding: 12px 18px;
-            font-size: 0.88rem;
-            box-shadow: 0 8px 24px rgba(0,0,0,0.4);
-            transform: translateY(80px);
-            opacity: 0;
-            transition: all 0.3s;
-            max-width: 320px;
-            z-index: 999;
-        }
-        .toast.show { transform: translateY(0); opacity: 1; }
-        .toast.success { border-color: var(--green); color: var(--green); }
-        .toast.error { border-color: var(--red); color: var(--red); }
-        .toast.info { border-color: var(--blue); color: var(--blue); }
-
-        .swap-indicator {
-            text-align: center;
-            font-size: 0.78rem;
-            color: var(--text-muted);
-            margin: -8px 0 20px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 8px;
-        }
-        .swap-arrow { color: var(--orange); font-size: 1rem; }
-    </style>
-</head>
-<body>
-
-<div class="header">
-    <h1>⚔️ Minecraft Dual Bot</h1>
-    <p>Hệ thống 2 bot thay ca — tự động backup khi 1 con die</p>
-</div>
-
-<!-- Server Info Bar -->
-<div class="server-bar">
-    <div class="detect-dot" id="detectDot"></div>
-    <div>
-        <div class="label">Server</div>
-        <div class="value" id="serverHost">Đang tải...</div>
-    </div>
-    <div class="sep">|</div>
-    <div>
-        <div class="label">Version phát hiện</div>
-        <div class="value" id="serverVersion">—</div>
-    </div>
-    <div class="sep">|</div>
-    <div>
-        <div class="label">Active Bot</div>
-        <div class="value" id="activeBotLabel">—</div>
-    </div>
-    <span class="version-badge" id="versionBadge">AUTO-DETECT</span>
-</div>
-
-<!-- Dual Bot Cards -->
-<div class="bots-grid" id="botsGrid">
-    <div class="bot-card offline" id="card-bot1">
-        <div class="bot-header">
-            <div class="bot-icon offline-icon" id="icon-bot1">🤖</div>
-            <div>
-                <div class="bot-name" id="name-bot1">Bot 1</div>
-                <div style="font-size:0.75rem;color:var(--text-muted)" id="user-bot1">—</div>
-            </div>
-            <span class="bot-role-badge badge-offline" id="badge-bot1">Offline</span>
-        </div>
-        <div class="bot-stats">
-            <div class="stat">
-                <div class="stat-label">❤️ HP</div>
-                <div class="stat-value" id="health-bot1">—</div>
-            </div>
-            <div class="stat">
-                <div class="stat-label">🍖 Đói</div>
-                <div class="stat-value" id="food-bot1">—</div>
-            </div>
-            <div class="stat">
-                <div class="stat-label">📍 Vị trí</div>
-                <div class="stat-value blue" id="pos-bot1">—</div>
-            </div>
-            <div class="stat">
-                <div class="stat-label">⏱️ Uptime</div>
-                <div class="stat-value" id="uptime-bot1">—</div>
-            </div>
-        </div>
-        <div class="bot-status-bar">
-            <div class="status-dot dot-red" id="dot-bot1"></div>
-            <span id="status-bot1">Chờ khởi động</span>
-        </div>
-    </div>
-
-    <div class="bot-card offline" id="card-bot2">
-        <div class="bot-header">
-            <div class="bot-icon offline-icon" id="icon-bot2">🛡️</div>
-            <div>
-                <div class="bot-name" id="name-bot2">Bot 2</div>
-                <div style="font-size:0.75rem;color:var(--text-muted)" id="user-bot2">—</div>
-            </div>
-            <span class="bot-role-badge badge-offline" id="badge-bot2">Offline</span>
-        </div>
-        <div class="bot-stats">
-            <div class="stat">
-                <div class="stat-label">❤️ HP</div>
-                <div class="stat-value" id="health-bot2">—</div>
-            </div>
-            <div class="stat">
-                <div class="stat-label">🍖 Đói</div>
-                <div class="stat-value" id="food-bot2">—</div>
-            </div>
-            <div class="stat">
-                <div class="stat-label">📍 Vị trí</div>
-                <div class="stat-value blue" id="pos-bot2">—</div>
-            </div>
-            <div class="stat">
-                <div class="stat-label">⏱️ Uptime</div>
-                <div class="stat-value" id="uptime-bot2">—</div>
-            </div>
-        </div>
-        <div class="bot-status-bar">
-            <div class="status-dot dot-red" id="dot-bot2"></div>
-            <span id="status-bot2">Chờ khởi động</span>
-        </div>
-    </div>
-</div>
-
-<div class="swap-indicator">
-    <span>Bot 1</span>
-    <span class="swap-arrow">⇄</span>
-    <span>Tự động thay ca khi 1 con die</span>
-    <span class="swap-arrow">⇄</span>
-    <span>Bot 2</span>
-</div>
-
-<!-- Controls -->
-<div class="panel">
-    <div class="panel-title">Điều khiển</div>
-    <div class="controls">
-        <button class="btn btn-green" id="startBtn" onclick="sendCmd('start')">▶ Khởi động 2 Bot</button>
-        <button class="btn btn-orange" id="reconnectBtn" onclick="sendCmd('reconnect')">↺ Restart All</button>
-        <button class="btn btn-red" id="stopBtn" onclick="sendCmd('stop')">■ Dừng tất cả</button>
-    </div>
-</div>
-
-<!-- Chat -->
-<div class="panel">
-    <div class="panel-title">Chat (gửi qua Active Bot)</div>
-    <div class="chat-row">
-        <input class="chat-input" id="chatInput" placeholder="Nhập tin nhắn..." disabled>
-        <button class="btn btn-blue" id="chatBtn" onclick="sendChat()" disabled>Gửi</button>
-    </div>
-</div>
-
-<!-- Logs -->
-<div class="panel">
-    <div class="panel-title">Console Log</div>
-    <div class="logs-box" id="logsBox"></div>
-</div>
-
-<div class="toast" id="toast"></div>
-
-<script>
-const BASE = window.location.origin;
-let toastTimer;
-
-function toast(msg, type='info') {
-    const el = document.getElementById('toast');
-    el.textContent = msg;
-    el.className = \`toast show \${type}\`;
-    clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => el.classList.remove('show'), 3000);
-}
-
-function formatUptime(ms) {
-    if (!ms) return '—';
-    const s = Math.floor(ms/1000);
-    const h = Math.floor(s/3600), m = Math.floor((s%3600)/60), sec = s%60;
-    if (h > 0) return \`\${h}h \${m}m \${sec}s\`;
-    if (m > 0) return \`\${m}m \${sec}s\`;
-    return \`\${sec}s\`;
-}
-
-function updateBotCard(id, data) {
-    const card = document.getElementById(\`card-\${id}\`);
-    const badge = document.getElementById(\`badge-\${id}\`);
-    const dot = document.getElementById(\`dot-\${id}\`);
-    const icon = document.getElementById(\`icon-\${id}\`);
-
-    document.getElementById(\`name-\${id}\`).textContent = id === 'bot1' ? 'Bot 1' : 'Bot 2';
-    document.getElementById(\`user-\${id}\`).textContent = data.username || '—';
-    document.getElementById(\`health-\${id}\`).textContent = data.online ? \`\${Math.round(data.health)} / 20\` : '—';
-    document.getElementById(\`food-\${id}\`).textContent = data.online ? \`\${Math.round(data.food)} / 20\` : '—';
-    document.getElementById(\`pos-\${id}\`).textContent = data.online && data.position
-        ? \`\${data.position.x} / \${data.position.y} / \${data.position.z}\` : '—';
-    document.getElementById(\`uptime-\${id}\`).textContent = formatUptime(data.uptime);
-    document.getElementById(\`status-\${id}\`).textContent = data.status || '—';
-
-    // Card class & badge
-    card.className = 'bot-card';
-    dot.className = 'status-dot';
-    icon.className = 'bot-icon';
-
-    if (data.online && data.isActive) {
-        card.classList.add('active');
-        badge.className = 'bot-role-badge badge-active';
-        badge.textContent = '🎯 ACTIVE';
-        dot.classList.add('dot-green');
-        icon.classList.add('active-icon');
-        icon.textContent = '🎯';
-    } else if (data.online && !data.isActive) {
-        card.classList.add('backup');
-        badge.className = 'bot-role-badge badge-backup';
-        badge.textContent = '🛡️ BACKUP';
-        dot.classList.add('dot-blue');
-        icon.classList.add('backup-icon');
-        icon.textContent = '🛡️';
-    } else if (data.status && (data.status.includes('Retry') || data.status.includes('kết nối'))) {
-        card.classList.add('offline');
-        badge.className = 'bot-role-badge badge-connecting';
-        badge.textContent = '⏳ Retry...';
-        dot.classList.add('dot-yellow');
-        icon.classList.add('offline-icon');
-        icon.textContent = '⏳';
-    } else {
-        card.classList.add('offline');
-        badge.className = 'bot-role-badge badge-offline';
-        badge.textContent = 'Offline';
-        dot.classList.add('dot-red');
-        icon.classList.add('offline-icon');
-        icon.textContent = '💀';
+        };
     }
 
-    // Health color
-    const healthEl = document.getElementById(\`health-\${id}\`);
-    if (data.online) {
-        healthEl.className = data.health > 14 ? 'stat-value green' : data.health > 7 ? 'stat-value yellow' : 'stat-value red';
+    init() {
+        if (this.isStopped) return;
+        for (const id of Object.keys(this.bots)) {
+            this._connectBot(id);
+        }
     }
-}
 
-async function updateStatus() {
-    try {
-        const res = await fetch(\`\${BASE}/status\`);
-        const data = await res.json();
+    _clearIntervals(state) {
+        if (state.afkIntervalId) { clearInterval(state.afkIntervalId); state.afkIntervalId = null; }
+        if (state.autoChatIntervalId) { clearInterval(state.autoChatIntervalId); state.autoChatIntervalId = null; }
+        if (state.reconnectTimeoutId) { clearTimeout(state.reconnectTimeoutId); state.reconnectTimeoutId = null; }
+    }
 
-        // Server bar
-        document.getElementById('serverHost').textContent = \`\${location.hostname}:\${location.port || 3000}\`;
-        const ver = data.detectedVersion;
-        document.getElementById('serverVersion').textContent = ver || 'Auto';
-        document.getElementById('activeBotLabel').textContent = data.activeBot || '—';
-        const badge = document.getElementById('versionBadge');
-        badge.textContent = ver ? \`v\${ver}\` : 'AUTO';
-        const dot = document.getElementById('detectDot');
-        dot.className = ver ? 'detect-dot ok' : 'detect-dot';
+    _scheduleReconnect(id, delay, reason) {
+        const state = this.bots[id];
+        if (state.reconnectTimeoutId) { clearTimeout(state.reconnectTimeoutId); state.reconnectTimeoutId = null; }
+        if (state.bot) { state.bot.removeAllListeners(); state.bot = null; }
+        state.isConnecting = false;
+        state.online = false;
+        state.status = 'Reconnecting';
 
-        // Bot cards
-        const bots = data.bots || {};
-        updateBotCard('bot1', bots.bot1 || {});
-        updateBotCard('bot2', bots.bot2 || {});
+        const maxRetries = config.features.autoReconnect.maxRetries || 10;
+        if (state.retryCount >= maxRetries) {
+            logger.warn(`⚠️ ${id.toUpperCase()}: Đã đạt giới hạn thử kết nối lại (${maxRetries}). Dừng.`);
+            state.status = 'Max retries reached';
+            return;
+        }
 
-        // Chat enable if any bot online
-        const anyOnline = (bots.bot1?.online || bots.bot2?.online);
-        document.getElementById('chatInput').disabled = !anyOnline;
-        document.getElementById('chatBtn').disabled = !anyOnline;
-    } catch(e) {}
-}
+        state.retryCount++;
+        logger.info(`🔄 ${id.toUpperCase()}: Kết nối lại sau ${delay / 1000}s do ${reason}... (lần ${state.retryCount})`);
+        state.reconnectTimeoutId = setTimeout(() => {
+            if (!this.isStopped) this._connectBot(id);
+        }, delay);
+    }
 
-async function sendCmd(action) {
-    try {
-        const res = await fetch(\`\${BASE}/command\`, {
-            method: 'POST',
-            headers: {'Content-Type':'application/json'},
-            body: JSON.stringify({action})
+    _connectBot(id) {
+        const state = this.bots[id];
+        if (state.isConnecting || state.online) return;
+
+        state.isConnecting = true;
+        state.status = 'Connecting';
+
+        logger.info(`🔗 ${id.toUpperCase()}: Đang kết nối với tên: ${state.username}`);
+
+        let botInstance;
+        try {
+            botInstance = createBot({
+                host: config.server.host,
+                port: config.server.port,
+                username: state.username,
+                password: config.bot.password || undefined,
+                auth: config.bot.auth || config.server.auth || 'offline',
+                version: false,
+                hideErrors: false
+            });
+            botInstance.loadPlugin(pathfinder);
+        } catch (err) {
+            logger.error(`❌ ${id.toUpperCase()}: Lỗi tạo bot: ${err.message}`);
+            state.isConnecting = false;
+            state.status = 'Error';
+            this._scheduleReconnect(id, config.features.autoReconnect.delay, 'lỗi tạo bot');
+            return;
+        }
+
+        state.bot = botInstance;
+
+        botInstance.on('spawn', () => {
+            if (this.isStopped) { botInstance.quit('stopped'); return; }
+            state.online = true;
+            state.isConnecting = false;
+            state.startTime = performance.now();
+            state.retryCount = 0;
+            state.status = 'Online';
+            this.detectedVersion = botInstance.version;
+            logger.info(`✅ ${id.toUpperCase()}: Đã kết nối! (v${botInstance.version})`);
+
+            this._clearIntervals(state);
+
+            if (config.features.antiAfk.enabled) {
+                const afkMin = config.features.antiAfk.minInterval;
+                const afkMax = config.features.antiAfk.maxInterval;
+                state.afkIntervalId = setInterval(async () => {
+                    if (!state.online || !state.bot) return;
+                    const actions = config.features.antiAfk.actions;
+                    const possible = Object.keys(actions).filter(a => actions[a]);
+                    if (!possible.length) return;
+                    const act = possible[Math.floor(Math.random() * possible.length)];
+                    try {
+                        switch (act) {
+                            case 'jump':
+                                botInstance.setControlState('jump', true);
+                                await botInstance.waitForTicks(5);
+                                botInstance.setControlState('jump', false);
+                                break;
+                            case 'sneak':
+                                botInstance.setControlState('sneak', !botInstance.getControlState('sneak'));
+                                break;
+                            case 'lookAround':
+                                await botInstance.look(Math.random() * Math.PI * 2, Math.random() * Math.PI - Math.PI / 2, true);
+                                break;
+                            case 'swingArm':
+                                botInstance.swingArm();
+                                break;
+                            case 'walkRandomly': {
+                                const dirs = ['forward', 'back', 'left', 'right'];
+                                const d = dirs[Math.floor(Math.random() * dirs.length)];
+                                botInstance.setControlState(d, true);
+                                await botInstance.waitForTicks(Math.floor(Math.random() * 20) + 10);
+                                botInstance.setControlState(d, false);
+                                break;
+                            }
+                            case 'toggleWalk': {
+                                const d2 = Math.random() > 0.5 ? 'forward' : 'back';
+                                botInstance.setControlState(d2, true);
+                                await botInstance.waitForTicks(Math.floor(Math.random() * 40) + 10);
+                                botInstance.setControlState(d2, false);
+                                break;
+                            }
+                            case 'switchHotbar': {
+                                const cur = botInstance.inventory.selectedHotbarFrame;
+                                let ns = Math.floor(Math.random() * 9);
+                                if (ns === cur) ns = (ns + 1) % 9;
+                                botInstance.setQuickBarSlot(ns);
+                                break;
+                            }
+                            case 'interactWithEntity': {
+                                const ent = botInstance.nearestEntity();
+                                if (ent) await botInstance.lookAt(ent.position.offset(0, ent.height || 1, 0), true);
+                                break;
+                            }
+                            case 'inventoryInteraction': {
+                                const items = botInstance.inventory.items();
+                                if (items.length > 0) {
+                                    const item = items[Math.floor(Math.random() * items.length)];
+                                    logger.info(`🎒 ${id.toUpperCase()} AFK: inventory interaction with ${item.name}`);
+                                }
+                                break;
+                            }
+                            default: break;
+                        }
+                    } catch (e) {
+                        logger.error(`❌ ${id.toUpperCase()} AFK action ${act}: ${e.message}`);
+                    }
+                }, Math.random() * (afkMax - afkMin) + afkMin);
+            }
+
+            if (config.features.autoChat.enabled && config.features.autoChat.messages.length > 0) {
+                state.autoChatIntervalId = setInterval(() => {
+                    if (!state.online || !state.bot) return;
+                    const msgs = config.features.autoChat.messages;
+                    const msg = msgs[Math.floor(Math.random() * msgs.length)];
+                    botInstance.chat(msg);
+                    logger.info(`🗣️ ${id.toUpperCase()} CHAT: "${msg}"`);
+                }, config.features.autoChat.interval);
+            }
         });
-        const data = await res.json();
-        toast(data.message, data.success ? 'success' : 'error');
-        setTimeout(updateStatus, 1000);
-    } catch(e) { toast('Lỗi kết nối server!', 'error'); }
-}
 
-async function sendChat() {
-    const input = document.getElementById('chatInput');
-    const msg = input.value.trim();
-    if (!msg) return;
-    try {
-        const res = await fetch(\`\${BASE}/chat\`, {
-            method: 'POST',
-            headers: {'Content-Type':'application/json'},
-            body: JSON.stringify({message: msg})
+        botInstance.on('kicked', (reason) => {
+            const r = typeof reason === 'object' ? JSON.stringify(reason) : reason;
+            logger.error(`💥 ${id.toUpperCase()}: Bị kick! Lý do: "${r}"`);
+            state.online = false;
+            state.status = 'Kicked';
+            state.lastKick = { timestamp: new Date().toISOString(), reason: r };
+            this._clearIntervals(state);
+
+            if (config.features.randomUsernameOnKick.enabled) {
+                const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+                const len = config.features.randomUsernameOnKick.length || 4;
+                const suffix = Array.from({ length: len }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+                state.username = `${config.bot.baseUsername}-${suffix}`;
+                logger.info(`👤 ${id.toUpperCase()}: Đổi tên thành: ${state.username}`);
+            }
+
+            if (!this.isStopped && config.features.autoReconnect.enabled) {
+                this._scheduleReconnect(id, config.features.autoReconnect.kickDelay, 'bị kick');
+            }
         });
-        const data = await res.json();
-        toast(data.message, data.success ? 'success' : 'error');
-        if (data.success) input.value = '';
-    } catch(e) { toast('Lỗi!', 'error'); }
-}
 
-document.getElementById('chatInput').addEventListener('keydown', e => {
-    if (e.key === 'Enter') sendChat();
-});
+        botInstance.on('end', (reason) => {
+            logger.info(`💔 ${id.toUpperCase()}: Mất kết nối. Lý do: "${reason}"`);
+            state.online = false;
+            state.isConnecting = false;
+            state.status = 'Disconnected';
+            this._clearIntervals(state);
 
-async function fetchLogs() {
-    try {
-        const res = await fetch(\`\${BASE}/logs\`);
-        const logs = await res.json();
-        const box = document.getElementById('logsBox');
-        const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
-        box.innerHTML = logs.map(l =>
-            \`<div class="log-entry \${l.level.toLowerCase()}">\${l.timestamp} \${l.emoji} \${l.level.toUpperCase()}: \${l.message}</div>\`
-        ).join('');
-        if (atBottom) box.scrollTop = box.scrollHeight;
-    } catch(e) {}
-}
+            if (!this.isStopped && config.features.autoReconnect.enabled && !state.reconnectTimeoutId) {
+                this._scheduleReconnect(id, config.features.autoReconnect.delay, 'mất kết nối');
+            }
+        });
 
-updateStatus();
-fetchLogs();
-setInterval(updateStatus, 1500);
-setInterval(fetchLogs, 2000);
-</script>
-</body>
-</html>
-`;
-app.get('/', (req, res) => res.send(DASHBOARD_HTML));
+        botInstance.on('error', (err) => {
+            logger.error(`🐛 ${id.toUpperCase()} LỖI: ${err.message}`);
+            state.online = false;
+            state.isConnecting = false;
+            state.status = 'Error';
+            this._clearIntervals(state);
 
-// Khởi động server Express nếu tính năng webDashboard được bật
-if (config.features.webDashboard.enabled) {
-    app.listen(REPLIT_PORT, () => {
-        logger.info(`🌐 DASHBOARD: Bảng điều khiển web đang chạy tại http://localhost:${REPLIT_PORT}`);
-        logger.info(`🔗 DASHBOARD: Bạn có thể truy cập qua URL công khai của Replit.`);
-    });
-} else {
-    logger.info('🚫 DASHBOARD: Bảng điều khiển web đã bị tắt trong config.json.');
-}
+            if (!this.isStopped && config.features.autoReconnect.enabled && !state.reconnectTimeoutId) {
+                this._scheduleReconnect(id, config.features.autoReconnect.delay, 'lỗi');
+            }
+        });
 
-// Xử lý các lỗi không được xử lý (unhandled rejections và uncaught exceptions)
-process.on('unhandledRejection', (reason, promise) => {
-    logger.error('❌ LỖI KHÔNG XỬ LÝ: Unhandled Rejection at:', promise, 'reason:', reason);
-});
+        botInstance.on('chat', (username, message) => {
+            if (username === botInstance.username) return;
+            logger.info(`🗣️ [${id.toUpperCase()} CHAT] <${username}>: ${message}`);
+        });
 
-process.on('uncaughtException', (err) => {
-    logger.error('❌ LỖI KHỬ LÝ: Uncaught Exception:', err);
-    // Có thể cần thoát ứng dụng sau lỗi nghiêm trọng
-    // process.exit(1);
-});
+        botInstance.on('login', () => {
+            logger.info(`✅ ${id.toUpperCase()}: Đăng nhập thành công.`);
+        });
+
+        botInstance.on('health', () => {
+            state.health = botInstance.health;
+            state.food = botInstance.food;
+            if (botInstance.entity) {
+                state.position = {
+                    x: parseFloat(botInstance.entity.position.x.toFixed(2)),
+                    y: parseFloat(botInstance.entity.position.y.toFixed(2)),
+                    z: parseFloat(botInstance.entity.position.z.toFixed(2))
+                };
+            }
+        });
+    }
+
+    stopAll() {
+        this.isStopped = true;
+        for (const [id, state] of Object.entries(this.bots)) {
+            this._clearIntervals(state);
+            if (state.bot) {
+                try { state.bot.quit('Stopped by command'); } catch (e) {}
+                state.bot.removeAllListeners();
+                state.bot = null;
+            }
+            state.online = false;
+            state.isConnecting = false;
             state.status = 'Stopped';
         }
         logger.info('🛑 DUAL BOT: Tất cả bot đã dừng.');
@@ -1327,7 +869,6 @@ process.on('uncaughtException', (err) => {
             activeState.bot.chat(message);
             return true;
         }
-        // Fallback to other bot
         for (const [id, state] of Object.entries(this.bots)) {
             if (state.online && state.bot) {
                 state.bot.chat(message);
@@ -1353,7 +894,6 @@ process.on('uncaughtException', (err) => {
         return summary;
     }
 }
-
 // =================================================================================================
 // Init Manager
 // =================================================================================================
