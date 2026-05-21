@@ -942,6 +942,45 @@ app.post('/command', (req, res) => {
     }
 });
 
+app.get('/config', (req, res) => {
+    res.json({
+        host: config.server.host,
+        port: config.server.port,
+        bot1Username: config.bot.bot1Username || `${config.bot.baseUsername}_1`,
+        bot2Username: config.bot.bot2Username || `${config.bot.baseUsername}_2`,
+        auth: config.bot.auth || config.server.auth || 'offline',
+    });
+});
+
+app.post('/config', (req, res) => {
+    const { host, port, bot1Username, bot2Username, auth } = req.body;
+    if (!host || !port) return res.status(400).json({ success: false, message: 'Host và Port không được trống.' });
+    const portNum = parseInt(port);
+    if (isNaN(portNum) || portNum < 1 || portNum > 65535)
+        return res.status(400).json({ success: false, message: 'Port không hợp lệ (1-65535).' });
+
+    config.server.host = host.trim();
+    config.server.port = portNum;
+    if (auth) config.bot.auth = auth;
+    if (bot1Username?.trim()) {
+        config.bot.bot1Username = bot1Username.trim();
+        if (manager.bots.bot1) manager.bots.bot1.username = bot1Username.trim();
+    }
+    if (bot2Username?.trim()) {
+        config.bot.bot2Username = bot2Username.trim();
+        if (manager.bots.bot2) manager.bots.bot2.username = bot2Username.trim();
+    }
+
+    try {
+        fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf8');
+        logger.info(`⚙️ CONFIG: Đã cập nhật — Host: ${config.server.host}:${config.server.port}`);
+        res.json({ success: true, message: `Đã lưu! Server: ${config.server.host}:${config.server.port}. Nhấn Restart để áp dụng.` });
+    } catch (err) {
+        logger.error(`❌ CONFIG: Lỗi lưu config: ${err.message}`);
+        res.status(500).json({ success: false, message: 'Lỗi khi lưu file config.' });
+    }
+});
+
 const DASHBOARD_HTML = `<!DOCTYPE html>
 <html lang="vi">
 <head>
@@ -1216,6 +1255,77 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
             gap: 8px;
         }
         .swap-arrow { color: var(--orange); font-size: 1rem; }
+
+        /* ── Tabs ── */
+        .tabs {
+            display: flex;
+            gap: 4px;
+            margin-bottom: 20px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 5px;
+        }
+        .tab-btn {
+            flex: 1;
+            padding: 8px 0;
+            border: none;
+            border-radius: 7px;
+            background: transparent;
+            color: var(--text-muted);
+            font-size: 0.88rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-family: 'Inter', sans-serif;
+        }
+        .tab-btn.active {
+            background: var(--surface2);
+            color: var(--text);
+            border: 1px solid var(--border);
+        }
+        .tab-btn:hover:not(.active) { color: var(--text); }
+
+        .tab-page { display: none; }
+        .tab-page.active { display: block; }
+
+        /* ── Settings form ── */
+        .settings-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 14px;
+        }
+        @media (max-width: 600px) { .settings-grid { grid-template-columns: 1fr; } }
+        .field { display: flex; flex-direction: column; gap: 6px; }
+        .field-full { grid-column: 1 / -1; }
+        .field label {
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+        }
+        .field input, .field select {
+            background: var(--surface2);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text);
+            padding: 9px 12px;
+            font-size: 0.9rem;
+            font-family: 'JetBrains Mono', monospace;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+        .field input:focus, .field select:focus { border-color: var(--blue); }
+        .field select option { background: var(--surface2); }
+        .settings-note {
+            font-size: 0.78rem;
+            color: var(--text-muted);
+            background: var(--surface2);
+            border-radius: 6px;
+            padding: 8px 12px;
+            margin-top: 4px;
+        }
     </style>
 </head>
 <body>
@@ -1225,7 +1335,13 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     <p>Hệ thống 2 bot thay ca — tự động backup khi 1 con die</p>
 </div>
 
-<!-- Server Info Bar -->
+<!-- Tabs -->
+<div class="tabs">
+    <button class="tab-btn active" onclick="switchTab('dashboard')">📊 Dashboard</button>
+    <button class="tab-btn" onclick="switchTab('settings')">⚙️ Settings</button>
+</div>
+
+<div class="tab-page active" id="tab-dashboard">
 <div class="server-bar">
     <div class="detect-dot" id="detectDot"></div>
     <div>
@@ -1346,6 +1462,47 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     <div class="panel-title">Console Log</div>
     <div class="logs-box" id="logsBox"></div>
 </div>
+
+</div><!-- end tab-dashboard -->
+
+<!-- Settings Tab -->
+<div class="tab-page" id="tab-settings">
+<div class="panel">
+    <div class="panel-title">⚙️ Cấu hình Server & Bot</div>
+    <div class="settings-grid">
+        <div class="field">
+            <label>🌐 Server Host</label>
+            <input type="text" id="cfgHost" placeholder="vd: play.hypixel.net">
+        </div>
+        <div class="field">
+            <label>🔌 Port</label>
+            <input type="number" id="cfgPort" placeholder="25565" min="1" max="65535">
+        </div>
+        <div class="field">
+            <label>🤖 Tên Bot 1</label>
+            <input type="text" id="cfgBot1" placeholder="AFKBot_1">
+        </div>
+        <div class="field">
+            <label>🛡️ Tên Bot 2</label>
+            <input type="text" id="cfgBot2" placeholder="AFKBot_2">
+        </div>
+        <div class="field field-full">
+            <label>🔑 Chế độ Auth</label>
+            <select id="cfgAuth">
+                <option value="offline">offline (cracked / không cần tài khoản)</option>
+                <option value="microsoft">microsoft (tài khoản chính thức)</option>
+            </select>
+        </div>
+    </div>
+    <div class="settings-note" style="margin-top:14px">
+        ⚠️ Sau khi lưu, nhấn <strong>Restart All</strong> ở tab Dashboard để bot kết nối với server mới.
+    </div>
+    <div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap">
+        <button class="btn btn-blue" onclick="saveConfig()">💾 Lưu cấu hình</button>
+        <button class="btn btn-orange" onclick="loadConfig()">↺ Tải lại từ server</button>
+    </div>
+</div>
+</div><!-- end tab-settings -->
 
 <div class="toast" id="toast"></div>
 
@@ -1486,6 +1643,44 @@ async function sendChat() {
 document.getElementById('chatInput').addEventListener('keydown', e => {
     if (e.key === 'Enter') sendChat();
 });
+
+function switchTab(name) {
+    document.querySelectorAll('.tab-page').forEach(p => p.classList.remove('active'));
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.getElementById(\`tab-\${name}\`).classList.add('active');
+    event.target.classList.add('active');
+    if (name === 'settings') loadConfig();
+}
+
+async function loadConfig() {
+    try {
+        const res = await fetch(\`\${BASE}/config\`);
+        const d = await res.json();
+        document.getElementById('cfgHost').value = d.host || '';
+        document.getElementById('cfgPort').value = d.port || 25565;
+        document.getElementById('cfgBot1').value = d.bot1Username || '';
+        document.getElementById('cfgBot2').value = d.bot2Username || '';
+        document.getElementById('cfgAuth').value = d.auth || 'offline';
+    } catch(e) { toast('Không thể tải config!', 'error'); }
+}
+
+async function saveConfig() {
+    const host = document.getElementById('cfgHost').value.trim();
+    const port = document.getElementById('cfgPort').value.trim();
+    const bot1Username = document.getElementById('cfgBot1').value.trim();
+    const bot2Username = document.getElementById('cfgBot2').value.trim();
+    const auth = document.getElementById('cfgAuth').value;
+    if (!host || !port) { toast('Host và Port không được trống!', 'error'); return; }
+    try {
+        const res = await fetch(\`\${BASE}/config\`, {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({ host, port, bot1Username, bot2Username, auth })
+        });
+        const data = await res.json();
+        toast(data.message, data.success ? 'success' : 'error');
+    } catch(e) { toast('Lỗi kết nối server!', 'error'); }
+}
 
 async function fetchLogs() {
     try {
